@@ -1,4 +1,3 @@
-# .github/workflows/build.yml
 name: Build LineageOS 17.1 + microG
 
 on:
@@ -14,7 +13,6 @@ jobs:
     name: Build ROM for ${{ github.event.inputs.device }}
     runs-on: ubuntu-22.04
     timeout-minutes: 480
-    container: ghcr.io/lineageos4microg/docker-lineage-cicd:lineage-17.1
 
     steps:
       - name: Checkout workflow
@@ -27,82 +25,29 @@ jobs:
         run: |
           echo "=== Disk before cleanup ==="
           df -h /
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc "/usr/local/share/boost"
           sudo apt-get clean && sudo apt-get autoremove -y
           echo "=== Disk after cleanup ==="
           df -h /
 
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git-core gnupg flex bison build-essential zip curl zlib1g-dev \
+            g++-multilib libxml2-utils xsltproc libncurses5-dev libssl-dev \
+            bc python2.7 libmpc-dev libelf-dev pngcrush schedtool \
+            liblz4-tool libxcrypt-dev ccache repo
+
+      - name: Create workspace
+        run: mkdir -p ~/android
+
       - name: Create local_manifests directory
-        run: mkdir -p /srv/android/.repo/local_manifests
+        run: mkdir -p ~/android/.repo/local_manifests
 
       - name: Add device trees via local_manifest
         run: |
-          echo '<?xml version="1.0" encoding="UTF-8"?>' > /srv/android/.repo/local_manifests/${DEVICE}.xml
-          echo '<manifest>' >> /srv/android/.repo/local_manifests/${DEVICE}.xml
-          echo "  <project path=\"device/bq/${DEVICE}\" name=\"LineageOS/android_device_bq_${DEVICE}\" remote=\"github\" revision=\"lineage-17.1\" />" >> /srv/android/.repo/local_manifests/${DEVICE}.xml
-          echo "  <project path=\"kernel/bq/msm8226\" name=\"LineageOS/android_kernel_bq_msm8226\" remote=\"github\" revision=\"lineage-17.1\" />" >> /srv/android/.repo/local_manifests/${DEVICE}.xml
-          echo "  <project path=\"vendor/bq/${DEVICE}\" name=\"LineageOS/android_vendor_bq_${DEVICE}\" remote=\"github\" revision=\"lineage-17.1\" />" >> /srv/android/.repo/local_manifests/${DEVICE}.xml
-          echo '</manifest>' >> /srv/android/.repo/local_manifests/${DEVICE}.xml
-          echo "Local manifest created for ${DEVICE}:"
-          cat /srv/android/.repo/local_manifests/${DEVICE}.xml
-
-      - name: Initialize LineageOS for microG
-        run: |
-          cd /srv/android
-          repo init -u https://github.com/LineageOS/android.git -b lineage-17.1 --git-lfs
-          echo "Repo initialized"
-
-      - name: Sync source code
-        run: |
-          cd /srv/android
-          repo sync -c --force-sync --no-clone-bundle --no-tags -j$(nproc) --quiet
-          echo "Sync completed"
-          du -sh /srv/android
-
-      - name: Apply signature spoofing patch
-        run: |
-          cd /srv/android/frameworks/base
-          git fetch https://review.lineageos.org/android_frameworks_base refs/changes/50/2955f0bd55e9938d5d49415182c27b50900b95 || true
-          git cherry-pick 6d2955f0 || true
-          echo "Signature spoofing patch handled"
-
-      - name: Start build
-        run: |
-          cd /srv/android
-          source build/envsetup.sh
-          lunch lineage_${DEVICE}-userdebug
-          mka bacon -j$(nproc) 2>&1 | tee /tmp/build.log
-          echo "Build completed"
-
-      - name: Rename output
-        run: |
-          cd /srv/android/out/target/product/${DEVICE}
-          TS=$(date +%Y%m%d_%H%M%S)
-          for f in *.zip; do
-            mv "$f" "lineage-17.1-${TS}-UNOFFICIAL-microG-${DEVICE}.zip"
-          done
-          sha256sum *.zip > SHA256SUMS.txt
-          echo "Output renamed and checksummed"
-
-      - name: Verify artifacts
-        run: |
-          ls -lh /srv/android/out/target/product/${DEVICE}/*.zip || { echo "ERROR: No output!"; exit 1; }
-
-      - name: Upload ROM artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: lineage-${{ env.DEVICE }}-microg
-          path: |
-            /srv/android/out/target/product/${DEVICE}/*.zip
-            /srv/android/out/target/product/${DEVICE}/SHA256SUMS.txt
-          retention-days: 7
-          if-no-files-found: error
-
-      - name: Upload build logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-logs-${{ env.DEVICE }}
-          path: /tmp/build.log
-          retention-days: 7
-          if-no-files-found: ignore
+          echo '<?xml version="1.0" encoding="UTF-8"?>' > ~/android/.repo/local_manifests/${DEVICE}.xml
+          echo '<manifest>' >> ~/android/.repo/local_manifests/${DEVICE}.xml
+          echo "  <project path=\"device/bq/${DEVICE}\" name=\"LineageOS/android_device_bq_${DEVICE}\" remote=\"github\" revision=\"lineage-17.1\" />" >> ~/android/.repo/local_manifests/${DEVICE}.xml
+          echo "  <project path=\"kernel/bq/msm8226\" name=\"LineageOS/andr
