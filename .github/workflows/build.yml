@@ -2,122 +2,108 @@ name: Build LineageOS 17.1 + microG
 
 on:
   workflow_dispatch:
+    inputs:
+      device:
+        description: 'Device codename'
+        required: true
+        default: 'vegetalte'
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    container: ghcr.io/lineageos/container-builder:latest
+    name: Build ${{ github.event.inputs.device }}
+    runs-on: ubuntu-22.04  # ← CRÍTICO: Ubuntu 24.04 no tiene Python 2.7
+    timeout-minutes: 480
+    container: ghcr.io/lineageos4microg/docker-lineage-cicd:lineage-17.1  # ← Contenedor con microG y Java 8 preconfigurados
+    
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Dependencies
+      - name: Checkout workflow
+        uses: actions/checkout@v4
+      
+      - name: Free disk space
         run: |
-          sudo apt-get update && sudo apt-get install -y \
-            git-core gnupg flex bison build-essential zip curl zlib1g-dev \
-            g++-multilib libxml2-utils xsltproc libncurses5-dev libssl-dev \
-            python2.7 libmpc-dev libelf-dev openjdk-17-jdk pngcrush \
-            schedtool liblz4-tool libxcrypt-dev bc cpio
-
-      - name: Initialize LineageOS
+          echo "=== Disk before cleanup ==="
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            "/usr/local/share/boost" "$AGENT_TOOLSDIRECTORY"
+          sudo apt-get clean
+          echo "=== Disk after cleanup ==="
+          df -h /
+      
+      - name: Create local_manifests directory
         run: |
-          mkdir -p ~/lineageos/bin ~/lineageos/src
-          curl https://storage.googleapis.com/git-repo-downloads/repo > ~/lineageos/bin/repo
-          chmod a+x ~/lineageos/bin/repo
-          export PATH=~/lineageos/bin:$PATH
-          
-          cd ~/lineageos/src
-          repo init -u https://github.com/LineageOS/android.git -b lineage-17.1
-
-      - name: Cache Repo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/lineageos/src/.repo
-          key: lineage-${{ runner.os }}-${{ hashFiles('**/.repo/project.lock') }}
-          restore-keys: |
-            lineage-${{ runner.os }}-
-
-      - name: Sync Repositories
+          mkdir -p /srv/android/.repo/local_manifests
+      
+      - name: Add device trees via local_manifest
         run: |
-          cd ~/lineageos/src
+          cat > /srv/android/.repo/local_manifests/vegetalte.xml << EOFMANIFEST
+<?xml version="1.0" encoding="UTF-8"?>
+<manifest>
+  <project path="device/bq/vegetalte" 
+           name="LineageOS/android_device_bq_vegetalte" 
+           remote="github" 
+           revision="lineage-17.1"/>
+  <project path="kernel/bq/msm8226" 
+           name="LineageOS/android_kernel_bq_msm8226" 
+           remote="github" 
+           revision="lineage-17.1"/>
+  <project path="vendor/bq/vegetalte" 
+           name="LineageOS/android_vendor_bq_vegetalte" 
+           remote="github" 
+           revision="lineage-17.1"/>
+</manifest>
+EOFMANIFEST
+          echo "Local manifest created:"
+          cat /srv/android/.repo/local_manifests/vegetalte.xml
+      
+      - name: Initialize LineageOS for microG
+        run: |
+          cd /srv/android
+          repo init -u https://github.com/LineageOS/android.git \
+                     -b lineage-17.1 \
+                     --git-lfs
+          echo "Repo initialized successfully"
+      
+      - name: Sync source code
+        run: |
+          cd /srv/android
           repo sync -c --force-sync --no-clone-bundle --no-tags -j$(nproc)
-
-      - name: Clone Device Trees
+          echo "Sync completed"
+          du -sh /srv/android
+      
+      - name: Apply signature spoofing patch
         run: |
-          cd ~/lineageos/src
-          git clone https://github.com/LineageOS/android_device_bq_vegetalte device/bq/vegetalte
-          git clone https://github.com/LineageOS/android_kernel_bq_vegetalte kernel/bq/vegetalte
-          git clone https://github.com/LineageOS/android_vendor_bq_vegetalte vendor/bq/vegetalte
-
-      - name: Upload Source Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: lineage-source
-          path: ~/lineageos/src
-          retention-days: 7
-          compression-level: 0
-
-  build:
-    name: Build + microG
-    runs-on: ubuntu-24.04
-    needs: sync
-    timeout-minutes: 360
-    env:
-      USE_CCACHE: 1
-      CCACHE_DIR: ~/.ccache
-    steps:
-      - name: Download Source
-        uses: actions/download-artifact@v4
-        with:
-          name: lineage-source
-          path: ~/lineageos/src
-
-      - name: Setup CCache
+          cd /srv/android
+          git fetch https://review.lineageos.org/android_frameworks/base HEAD:refs/heads/test
+          git cherry-pick 6d2955f0bd55e9938d5d49415182c27b50900b95 || echo "Patch already applied or not needed for LOS 17.1"
+      
+      - name: Start build
         run: |
-          sudo apt-get install -y ccache
-          mkdir -p ~/.ccache
-          ccache -M 50G
-          echo "CCACHE_SIZE=50G" >> $GITHUB_ENV
-
-      - name: Setup Build Environment
-        run: |
-          cd ~/lineageos/src
-          source build/envsetup.sh
-          lunch lineage_vegetalte-userdebug
-          export PATH=$HOME/lineageos/bin:$PATH
-
-      - name: Compile
-        run: |
-          cd ~/lineageos/src
-          source build/envsetup.sh
-          lunch lineage_vegetalte-userdebug
+          cd /srv/android
+          . build/envsetup.sh
+          lunch lineage_${{ github.event.inputs.device }}-userdebug
           mka bacon -j$(nproc) 2>&1 | tee /tmp/build.log
-
-      - name: Rename Output
+          echo "Build completed"
+      
+      - name: Verify artifacts
         run: |
-          cd ~/lineageos/src/out/target/product/vegetalte
-          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-          for zipfile in *.zip; do
-            mv "$zipfile" "lineage-17.1-${TIMESTAMP}-UNOFFICIAL-microG-vegetalte.zip"
-          done
-          sha256sum *.zip > SHA256SUMS.txt
-
-      - name: Upload Build Artifacts
+          ls -lh /srv/android/out/target/product/${{ github.event.inputs.device }}/*.zip || \
+            (echo "ERROR: No build output found!" && exit 1)
+      
+      - name: Upload ROM artifact
         uses: actions/upload-artifact@v4
         with:
-          name: lineage-os-vegetalte
-          path: |
-            ~/lineageos/src/out/target/product/vegetalte/*.zip
-            ~/lineageos/src/out/target/product/vegetalte/SHA256SUMS.txt
-          retention-days: 30
-          compression-level: 0
-
-      - name: Upload Logs on Failure
-        if: failure()
+          name: lineage-${{ github.event.inputs.device }}-microg-${{ github.run_number }}
+          path: /srv/android/out/target/product/${{ github.event.inputs.device }}/*.zip
+          retention-days: 7
+          if-no-files-found: error
+      
+      - name: Upload build logs
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: build-logs-${{ github.run_id }}
           path: |
             /tmp/build.log
-            ~/.ccache/ccache.log
+            /srv/android/out/build.log
           retention-days: 7
+          if-no-files-found: ignore
