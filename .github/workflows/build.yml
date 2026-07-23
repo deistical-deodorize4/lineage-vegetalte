@@ -1,26 +1,27 @@
+# .github/workflows/build.yml
 name: Build LineageOS 17.1 + microG
 
 on:
   workflow_dispatch:
     inputs:
       device:
-        description: 'Device codename'
+        description: 'Device codename (e.g., vegetalte)'
         required: true
         default: 'vegetalte'
 
 jobs:
   build:
-    name: Build ROM
+    name: Build ROM for ${{ github.event.inputs.device }}
     runs-on: ubuntu-22.04
     timeout-minutes: 480
     container: ghcr.io/lineageos4microg/docker-lineage-cicd:lineage-17.1
 
-    env:
-      DEVICE: ${{ inputs.device }}
-
     steps:
-      - uses: actions/checkout@v4
-        name: Checkout workflow
+      - name: Checkout workflow
+        uses: actions/checkout@v4
+
+      - name: Export device variable
+        run: echo "DEVICE=${{ github.event.inputs.device }}" >> $GITHUB_ENV
 
       - name: Free disk space
         run: |
@@ -36,15 +37,13 @@ jobs:
 
       - name: Add device trees via local_manifest
         run: |
-          cat > /srv/android/.repo/local_manifests/${DEVICE}.xml <<'EOF'
-<?xml version="1.0" encoding="UTF-8"?>
-<manifest>
-  <project path="device/bq/${DEVICE}" name="LineageOS/android_device_bq_${DEVICE}" remote="github" revision="lineage-17.1" />
-  <project path="kernel/bq/msm8226" name="LineageOS/android_kernel_bq_msm8226" remote="github" revision="lineage-17.1" />
-  <project path="vendor/bq/${DEVICE}" name="LineageOS/android_vendor_bq_${DEVICE}" remote="github" revision="lineage-17.1" />
-</manifest>
-EOF
-          echo "Local manifest created:"
+          echo '<?xml version="1.0" encoding="UTF-8"?>' > /srv/android/.repo/local_manifests/${DEVICE}.xml
+          echo '<manifest>' >> /srv/android/.repo/local_manifests/${DEVICE}.xml
+          echo "  <project path=\"device/bq/${DEVICE}\" name=\"LineageOS/android_device_bq_${DEVICE}\" remote=\"github\" revision=\"lineage-17.1\" />" >> /srv/android/.repo/local_manifests/${DEVICE}.xml
+          echo "  <project path=\"kernel/bq/msm8226\" name=\"LineageOS/android_kernel_bq_msm8226\" remote=\"github\" revision=\"lineage-17.1\" />" >> /srv/android/.repo/local_manifests/${DEVICE}.xml
+          echo "  <project path=\"vendor/bq/${DEVICE}\" name=\"LineageOS/android_vendor_bq_${DEVICE}\" remote=\"github\" revision=\"lineage-17.1\" />" >> /srv/android/.repo/local_manifests/${DEVICE}.xml
+          echo '</manifest>' >> /srv/android/.repo/local_manifests/${DEVICE}.xml
+          echo "Local manifest created for ${DEVICE}:"
           cat /srv/android/.repo/local_manifests/${DEVICE}.xml
 
       - name: Initialize LineageOS for microG
@@ -65,6 +64,7 @@ EOF
           cd /srv/android/frameworks/base
           git fetch https://review.lineageos.org/android_frameworks_base refs/changes/50/2955f0bd55e9938d5d49415182c27b50900b95 || true
           git cherry-pick 6d2955f0 || true
+          echo "Signature spoofing patch handled"
 
       - name: Start build
         run: |
@@ -72,6 +72,7 @@ EOF
           source build/envsetup.sh
           lunch lineage_${DEVICE}-userdebug
           mka bacon -j$(nproc) 2>&1 | tee /tmp/build.log
+          echo "Build completed"
 
       - name: Rename output
         run: |
@@ -81,6 +82,7 @@ EOF
             mv "$f" "lineage-17.1-${TS}-UNOFFICIAL-microG-${DEVICE}.zip"
           done
           sha256sum *.zip > SHA256SUMS.txt
+          echo "Output renamed and checksummed"
 
       - name: Verify artifacts
         run: |
@@ -104,12 +106,3 @@ EOF
           path: /tmp/build.log
           retention-days: 7
           if-no-files-found: ignore
-
-      - name: Notify Discord (optional)
-        if: always()
-        uses: Ilshidur/action-discord@0.3.2
-        env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-        with:
-          args: |
-            Build ${{ job.status }} for **${{ env.DEVICE }}** – <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}>
