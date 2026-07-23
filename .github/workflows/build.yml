@@ -4,12 +4,11 @@ on:
   workflow_dispatch:
 
 jobs:
-  sync:
-    name: Sync Source Code
-    runs-on: ubuntu-24.04
+  build:
+    runs-on: ubuntu-latest
+    container: ghcr.io/lineageos/container-builder:latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Install Dependencies
         run: |
